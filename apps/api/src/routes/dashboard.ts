@@ -475,8 +475,10 @@ dashboard.post("/login", async (c) => {
     const data = (await resp.json()) as { access_token: string; refresh_token: string; expires_in: number };
     c.header("Set-Cookie", `c1_token=${encodeURIComponent(data.access_token)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=${data.expires_in}`);
     return c.redirect("/console");
-  } catch {
-    return c.redirect("/console/login?error=" + encodeURIComponent("Login failed. Try again."));
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    console.error("Login error:", msg);
+    return c.redirect("/console/login?error=" + encodeURIComponent(msg));
   }
 });
 
@@ -562,9 +564,10 @@ dashboard.post("/signup", async (c) => {
 
     c.header("Set-Cookie", `c1_token=${encodeURIComponent(accessToken)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=${expiresIn}`);
     return c.redirect("/console");
-  } catch (e) {
-    console.error("Signup error:", e);
-    return c.redirect("/console/signup?error=" + encodeURIComponent("Signup failed. Try again."));
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    console.error("Signup error:", msg);
+    return c.redirect("/console/signup?error=" + encodeURIComponent(msg));
   }
 });
 
