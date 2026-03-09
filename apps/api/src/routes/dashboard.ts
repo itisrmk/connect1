@@ -3,6 +3,7 @@ import { createDb, connections, oauthApps, apiKeys, tenants } from "@connect1/db
 import { eq, and, count, sql } from "drizzle-orm";
 import { decrypt } from "connect1";
 import { getConnector, listProviders } from "../lib/connectors.js";
+import { randomBytes } from "node:crypto";
 
 type DashboardEnv = {
   Variables: {
@@ -10,6 +11,7 @@ type DashboardEnv = {
     tenantName: string;
     tenantEmail: string;
     plan: string;
+    supabaseToken: string;
   };
 };
 
@@ -27,28 +29,12 @@ function getEncryptionKey(): string {
   return key;
 }
 
-// Authenticate dashboard requests via cookie or header
-async function getDashboardTenant(c: any): Promise<{ tenantId: string; tenantName: string; tenantEmail: string; plan: string } | null> {
-  const apiKey = c.req.header("X-API-Key") || getCookie(c, "connect1_key");
-  if (!apiKey) return null;
+function getSupabaseUrl(): string {
+  return process.env.SUPABASE_URL || "";
+}
 
-  const database = getDb();
-  const [key] = await database
-    .select({ tenantId: apiKeys.tenantId })
-    .from(apiKeys)
-    .where(and(eq(apiKeys.key, apiKey), eq(apiKeys.isActive, true)))
-    .limit(1);
-
-  if (!key) return null;
-
-  const [tenant] = await database
-    .select({ id: tenants.id, name: tenants.name, email: tenants.email, plan: tenants.plan })
-    .from(tenants)
-    .where(eq(tenants.id, key.tenantId))
-    .limit(1);
-
-  if (!tenant) return null;
-  return { tenantId: tenant.id, tenantName: tenant.name, tenantEmail: tenant.email, plan: tenant.plan };
+function getSupabaseAnonKey(): string {
+  return process.env.SUPABASE_ANON_KEY || "";
 }
 
 function getCookie(c: any, name: string): string | undefined {
@@ -57,108 +43,294 @@ function getCookie(c: any, name: string): string | undefined {
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
+function generateApiKey(): string {
+  return `c1_live_${randomBytes(24).toString("hex")}`;
+}
+
+// Verify Supabase JWT by calling /auth/v1/user
+async function getSupabaseUser(token: string): Promise<{ id: string; email: string } | null> {
+  try {
+    const resp = await fetch(`${getSupabaseUrl()}/auth/v1/user`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: getSupabaseAnonKey(),
+      },
+    });
+    if (!resp.ok) return null;
+    const user = (await resp.json()) as { id: string; email: string };
+    return user;
+  } catch {
+    return null;
+  }
+}
+
 // ===================== STYLES =====================
 
 const STYLES = `
-:root { --bg: #09090b; --surface: #18181b; --surface2: #27272a; --border: #3f3f46; --text: #fafafa; --text2: #a1a1aa; --text3: #71717a; --blue: #3b82f6; --blue2: #1d4ed8; --green: #22c55e; --red: #ef4444; --yellow: #eab308; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface2: #1a1a1a;
+  --surface3: #222;
+  --border: #2a2a2a;
+  --border-hover: #3a3a3a;
+  --text: #ededed;
+  --text2: #888;
+  --text3: #666;
+  --accent: #ededed;
+  --accent-hover: #fff;
+  --blue: #3b82f6;
+  --green: #22c55e;
+  --green-muted: #0a2a1b;
+  --red: #ef4444;
+  --red-muted: #2a0a0a;
+  --yellow: #eab308;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: var(--bg); color: var(--text); font-size: 14px; }
-a { color: var(--blue); text-decoration: none; }
-a:hover { text-decoration: underline; }
+body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+a { color: var(--text2); text-decoration: none; transition: color 150ms; }
+a:hover { color: var(--text); }
+::selection { background: rgba(59,130,246,0.3); }
+input::placeholder { color: var(--text3); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* Layout */
 .layout { display: flex; min-height: 100vh; }
-.sidebar { width: 240px; background: var(--surface); border-right: 1px solid var(--border); padding: 1rem 0; display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; }
-.sidebar-header { padding: 0.5rem 1.25rem 1.5rem; border-bottom: 1px solid var(--border); margin-bottom: 0.5rem; }
-.sidebar-header h1 { font-size: 1.1rem; font-weight: 700; }
-.sidebar-header .env { font-size: 0.7rem; color: var(--text3); margin-top: 2px; }
-.sidebar nav a { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 1.25rem; color: var(--text2); font-size: 0.85rem; text-decoration: none; transition: all 0.1s; }
-.sidebar nav a:hover { color: var(--text); background: var(--surface2); }
-.sidebar nav a.active { color: var(--text); background: var(--surface2); border-right: 2px solid var(--blue); }
-.sidebar-footer { margin-top: auto; padding: 1rem 1.25rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--text3); }
-.main { margin-left: 240px; flex: 1; padding: 2rem 2.5rem; max-width: 1100px; }
-.page-header { margin-bottom: 1.5rem; }
-.page-header h2 { font-size: 1.25rem; font-weight: 600; }
-.page-header p { color: var(--text3); font-size: 0.85rem; margin-top: 0.25rem; }
+.sidebar {
+  width: 220px; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; z-index: 10;
+}
+.sidebar-header { padding: 20px 20px 16px; }
+.sidebar-header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+.sidebar-header .env { font-size: 11px; color: var(--text3); margin-top: 2px; font-weight: 400; }
 
-/* Cards & Tables */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 1rem; }
-.card-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-.card-header h3 { font-size: 0.9rem; font-weight: 600; }
-.card-body { padding: 1.25rem; }
-.card-empty { padding: 3rem; text-align: center; color: var(--text3); }
+.sidebar nav { padding: 0 8px; flex: 1; }
+.sidebar nav a {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 2px;
+  color: var(--text2); font-size: 13px; font-weight: 450; border-radius: var(--radius-xs);
+  transition: all 150ms;
+}
+.sidebar nav a:hover { color: var(--text); background: var(--surface2); }
+.sidebar nav a.active { color: var(--text); background: var(--surface2); }
+.sidebar nav a .icon { width: 16px; height: 16px; opacity: 0.6; }
+
+.sidebar-footer {
+  padding: 16px 20px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.sidebar-footer .user { font-size: 12px; color: var(--text2); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-footer a { font-size: 12px; color: var(--text3); }
+.sidebar-footer a:hover { color: var(--text); }
+
+.main { margin-left: 220px; flex: 1; padding: 32px 40px; max-width: 1080px; }
+.page-header { margin-bottom: 24px; }
+.page-header h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.4px; }
+.page-header p { color: var(--text3); font-size: 13px; margin-top: 4px; }
+
+/* Cards */
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; margin-bottom: 16px;
+  transition: border-color 150ms;
+}
+.card:hover { border-color: var(--border-hover); }
+.card-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.card-header h3 { font-size: 13px; font-weight: 600; }
+.card-body { padding: 20px; }
+.card-empty { padding: 48px 20px; text-align: center; color: var(--text3); font-size: 13px; }
+
+/* Tables */
 table { width: 100%; border-collapse: collapse; }
-th { text-align: left; padding: 0.6rem 1rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); border-bottom: 1px solid var(--border); }
-td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+th {
+  text-align: left; padding: 10px 20px; font-size: 11px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3);
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+td { padding: 12px 20px; border-bottom: 1px solid var(--border); font-size: 13px; }
 tr:last-child td { border-bottom: none; }
+tr { transition: background 150ms; }
+tbody tr:hover { background: var(--surface2); }
 
 /* Badges */
-.badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.7rem; font-weight: 500; }
-.badge-green { background: #052e16; color: #4ade80; }
-.badge-blue { background: #172554; color: #60a5fa; }
-.badge-gray { background: var(--surface2); color: var(--text3); }
-.badge-yellow { background: #422006; color: #facc15; }
+.badge {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.01em;
+}
+.badge-green { background: var(--green-muted); color: #4ade80; }
+.badge-blue { background: rgba(59,130,246,0.12); color: #60a5fa; }
+.badge-gray { background: var(--surface3); color: var(--text3); }
+.badge-yellow { background: rgba(234,179,8,0.1); color: #facc15; }
 
-/* Stats Grid */
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
-.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.25rem; }
-.stat-card .label { font-size: 0.75rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; }
-.stat-card .value { font-size: 1.75rem; font-weight: 700; margin-top: 0.25rem; }
+/* Stats */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; transition: border-color 150ms;
+}
+.stat-card:hover { border-color: var(--border-hover); }
+.stat-card .label { font-size: 12px; color: var(--text3); font-weight: 500; }
+.stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; letter-spacing: -1px; }
 
 /* Forms */
-.form-group { margin-bottom: 1rem; }
-.form-group label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text2); margin-bottom: 0.35rem; }
-.form-group input, .form-group select, .form-group textarea { width: 100%; padding: 0.5rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; color: var(--text); font-size: 0.85rem; font-family: inherit; }
-.form-group input:focus, .form-group select:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
-.form-group input::placeholder { color: var(--text3); }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; font-size: 13px; font-weight: 500; color: var(--text2); margin-bottom: 6px; }
+.form-group .hint { font-size: 11px; color: var(--text3); font-weight: 400; }
+.form-group input, .form-group select, .form-group textarea {
+  width: 100%; padding: 9px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-xs); color: var(--text); font-size: 13px; font-family: inherit;
+  transition: border-color 150ms, box-shadow 150ms; outline: none;
+}
+.form-group input:focus, .form-group select:focus {
+  border-color: var(--text3); box-shadow: 0 0 0 3px rgba(255,255,255,0.04);
+}
+.form-group input[readonly] { color: var(--text3); cursor: default; }
 
 /* Buttons */
-.btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.45rem 1rem; border-radius: 0.375rem; font-size: 0.8rem; font-weight: 500; border: none; cursor: pointer; font-family: inherit; transition: all 0.1s; }
-.btn-primary { background: var(--blue); color: white; }
-.btn-primary:hover { background: var(--blue2); }
-.btn-danger { background: var(--red); color: white; }
-.btn-danger:hover { opacity: 0.9; }
-.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text2); }
-.btn-outline:hover { background: var(--surface2); color: var(--text); }
-.btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
-
-/* Tabs */
-.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
-.tab { padding: 0.6rem 1.25rem; font-size: 0.85rem; color: var(--text3); border-bottom: 2px solid transparent; cursor: pointer; text-decoration: none; }
-.tab:hover { color: var(--text); text-decoration: none; }
-.tab.active { color: var(--text); border-bottom-color: var(--blue); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 16px; border-radius: var(--radius-xs); font-size: 13px; font-weight: 500;
+  border: none; cursor: pointer; font-family: inherit; transition: all 150ms; line-height: 1;
+}
+.btn-primary { background: var(--accent); color: var(--bg); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--surface3); border-color: var(--border-hover); }
+.btn-danger { background: var(--red-muted); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
+.btn-danger:hover { background: rgba(239,68,68,0.15); }
+.btn-ghost { background: transparent; color: var(--text2); }
+.btn-ghost:hover { color: var(--text); background: var(--surface2); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-block { width: 100%; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Provider grid */
-.provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 1rem; }
-.provider-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.25rem; cursor: pointer; transition: border-color 0.1s; }
-.provider-card:hover { border-color: var(--blue); }
-.provider-card.configured { border-color: var(--green); }
-.provider-card h4 { font-size: 0.9rem; margin-bottom: 0.25rem; }
-.provider-card .domains { margin-top: 0.5rem; }
-.provider-card .status { margin-top: 0.5rem; font-size: 0.75rem; }
+.provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.provider-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; cursor: pointer; transition: all 150ms; text-decoration: none; color: inherit;
+}
+.provider-card:hover { border-color: var(--border-hover); transform: translateY(-1px); }
+.provider-card.configured { border-color: rgba(34,197,94,0.3); }
+.provider-card h4 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.provider-card .desc { color: var(--text3); font-size: 12px; line-height: 1.4; }
+.provider-card .meta { margin-top: 12px; display: flex; justify-content: space-between; align-items: center; }
 
 /* Toast */
-.toast { position: fixed; top: 1rem; right: 1rem; padding: 0.75rem 1.25rem; border-radius: 0.5rem; font-size: 0.85rem; z-index: 100; animation: fadeIn 0.2s; }
-.toast-success { background: #052e16; color: #4ade80; border: 1px solid #166534; }
-.toast-error { background: #450a0a; color: #fca5a5; border: 1px solid #991b1b; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+.toast {
+  position: fixed; top: 16px; right: 16px; padding: 10px 16px; border-radius: var(--radius-xs);
+  font-size: 13px; z-index: 100; backdrop-filter: blur(8px);
+  animation: slideIn 200ms ease-out;
+}
+.toast-success { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.2); }
+.toast-error { background: rgba(239,68,68,0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
+@keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 
-/* Login */
-.login-container { max-width: 420px; margin: 10vh auto; padding: 2rem; }
-.login-container h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
-.login-container p { color: var(--text3); margin-bottom: 2rem; font-size: 0.9rem; }
-
-/* Code block */
-code { background: var(--bg); padding: 0.15rem 0.4rem; border-radius: 0.25rem; font-size: 0.8rem; font-family: "SF Mono", Monaco, monospace; }
-.code-block { background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; padding: 1rem; font-family: "SF Mono", Monaco, monospace; font-size: 0.8rem; overflow-x: auto; white-space: pre; }
+/* Auth pages */
+.auth-wrapper {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+}
+.auth-card {
+  width: 100%; max-width: 380px; padding: 0 20px;
+}
+.auth-logo { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 8px; }
+.auth-subtitle { color: var(--text3); font-size: 13px; margin-bottom: 32px; line-height: 1.5; }
+.auth-divider {
+  display: flex; align-items: center; gap: 12px; margin: 24px 0;
+  color: var(--text3); font-size: 12px;
+}
+.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.auth-footer { text-align: center; margin-top: 24px; font-size: 13px; color: var(--text3); }
+.auth-footer a { color: var(--text2); }
+.auth-footer a:hover { color: var(--text); }
 
 /* Alert */
-.alert { padding: 0.75rem 1rem; border-radius: 0.375rem; font-size: 0.85rem; margin-bottom: 1rem; }
-.alert-info { background: #172554; color: #93c5fd; border: 1px solid #1e40af; }
-.alert-success { background: #052e16; color: #86efac; border: 1px solid #166534; }
+.alert { padding: 10px 14px; border-radius: var(--radius-xs); font-size: 13px; margin-bottom: 16px; line-height: 1.4; }
+.alert-info { background: rgba(59,130,246,0.08); color: #93c5fd; border: 1px solid rgba(59,130,246,0.15); }
+.alert-success { background: rgba(34,197,94,0.08); color: #86efac; border: 1px solid rgba(34,197,94,0.15); }
+.alert-error { background: rgba(239,68,68,0.08); color: #fca5a5; border: 1px solid rgba(239,68,68,0.15); }
+
+/* Code */
+code {
+  background: var(--surface2); padding: 2px 6px; border-radius: 4px;
+  font-size: 12px; font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.code-block {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xs);
+  padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px; overflow-x: auto; white-space: pre; line-height: 1.6;
+  color: var(--text2);
+}
+
+/* Tabs */
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.tab {
+  padding: 10px 16px; font-size: 13px; color: var(--text3); font-weight: 500;
+  border-bottom: 2px solid transparent; cursor: pointer; text-decoration: none;
+  transition: all 150ms;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--text); }
+
+/* Utility */
+.flex { display: flex; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+.mt-1 { margin-top: 4px; }
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 12px; }
+.mt-4 { margin-top: 16px; }
+.mb-4 { margin-bottom: 16px; }
+.text-sm { font-size: 13px; }
+.text-xs { font-size: 12px; }
+.text-muted { color: var(--text3); }
+.font-mono { font-family: 'SF Mono', 'Fira Code', monospace; }
+
+/* New key reveal */
+.key-reveal {
+  background: var(--surface); border: 1px solid rgba(34,197,94,0.3); border-radius: var(--radius-xs);
+  padding: 16px; margin-bottom: 16px;
+}
+.key-reveal .key-value {
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-xs);
+  padding: 10px 12px; font-family: 'SF Mono', monospace; font-size: 12px;
+  word-break: break-all; margin-top: 8px; color: var(--green);
+}
 `;
 
-function page(title: string, activePage: string, content: string, tenantName?: string): string {
+// ===================== TEMPLATES =====================
+
+function page(title: string, activePage: string, content: string, tenantEmail?: string): string {
+  const navItems = [
+    { id: "home", label: "Overview", href: "/console", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" },
+    { id: "integrations", label: "Integrations", href: "/console/integrations", icon: "M13 10V3L4 14h7v7l9-11h-7z" },
+    { id: "connections", label: "Connections", href: "/console/connections", icon: "M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" },
+    { id: "api-keys", label: "API Keys", href: "/console/api-keys", icon: "M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" },
+    { id: "settings", label: "Settings", href: "/console/settings", icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z" },
+  ];
+
+  const nav = navItems.map(item =>
+    `<a href="${item.href}" class="${activePage === item.id ? "active" : ""}">
+      <svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="${item.icon}"/></svg>
+      ${item.label}
+    </a>`
+  ).join("");
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -174,18 +346,12 @@ function page(title: string, activePage: string, content: string, tenantName?: s
     <div class="sidebar">
       <div class="sidebar-header">
         <h1>Connect1</h1>
-        <div class="env">Production</div>
+        <div class="env">Dashboard</div>
       </div>
-      <nav>
-        <a href="/console" class="${activePage === "home" ? "active" : ""}">Dashboard</a>
-        <a href="/console/integrations" class="${activePage === "integrations" ? "active" : ""}">Integrations</a>
-        <a href="/console/connections" class="${activePage === "connections" ? "active" : ""}">Connections</a>
-        <a href="/console/api-keys" class="${activePage === "api-keys" ? "active" : ""}">API Keys</a>
-        <a href="/console/settings" class="${activePage === "settings" ? "active" : ""}">Settings</a>
-      </nav>
+      <nav>${nav}</nav>
       <div class="sidebar-footer">
-        ${tenantName ? `${tenantName}<br>` : ""}
-        <a href="/console/logout" style="color:var(--text3)">Sign out</a>
+        <span class="user">${tenantEmail ?? ""}</span>
+        <a href="/console/logout">Sign out</a>
       </div>
     </div>
     <div class="main">${content}</div>
@@ -193,129 +359,249 @@ function page(title: string, activePage: string, content: string, tenantName?: s
   <script>
     document.body.addEventListener('htmx:afterRequest', function(e) {
       if (e.detail.successful && e.detail.xhr.status < 300) {
-        const toast = document.createElement('div');
-        toast.className = 'toast toast-success';
-        toast.textContent = 'Saved successfully';
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
+        var t = document.createElement('div');
+        t.className = 'toast toast-success';
+        t.textContent = 'Saved successfully';
+        document.body.appendChild(t);
+        setTimeout(function(){ t.remove(); }, 3000);
       }
     });
     document.body.addEventListener('htmx:responseError', function(e) {
-      const toast = document.createElement('div');
-      toast.className = 'toast toast-error';
-      try { toast.textContent = JSON.parse(e.detail.xhr.responseText).error.message; } catch { toast.textContent = 'Something went wrong'; }
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 4000);
+      var t = document.createElement('div');
+      t.className = 'toast toast-error';
+      try { t.textContent = JSON.parse(e.detail.xhr.responseText).error.message; } catch(x) { t.textContent = 'Something went wrong'; }
+      document.body.appendChild(t);
+      setTimeout(function(){ t.remove(); }, 4000);
     });
   </script>
 </body>
 </html>`;
 }
 
-function loginPage(error?: string): string {
+function authPage(title: string, content: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in — Connect1</title>
+  <title>${title} — Connect1</title>
   <style>${STYLES}</style>
 </head>
 <body>
-  <div class="login-container">
-    <h1>Connect1</h1>
-    <p>Sign in with your API key to manage integrations, connections, and settings.</p>
-    ${error ? `<div class="alert" style="background:#450a0a;color:#fca5a5;border:1px solid #991b1b;margin-bottom:1rem">${error}</div>` : ""}
-    <form method="POST" action="/console/login">
-      <div class="form-group">
-        <label>API Key</label>
-        <input type="password" name="apiKey" placeholder="c1_live_..." required autofocus>
-      </div>
-      <button type="submit" class="btn btn-primary" style="width:100%">Sign in</button>
-    </form>
-    <div style="margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border)">
-      <p style="color:var(--text3);font-size:0.8rem;margin-bottom:1rem">Don't have an account?</p>
-      <form method="POST" action="/console/register">
-        <div class="form-group">
-          <label>Name</label>
-          <input type="text" name="name" placeholder="Your company" required>
-        </div>
-        <div class="form-group">
-          <label>Email</label>
-          <input type="email" name="email" placeholder="you@company.com" required>
-        </div>
-        <button type="submit" class="btn btn-outline" style="width:100%">Create account</button>
-      </form>
-    </div>
+  <div class="auth-wrapper">
+    <div class="auth-card">${content}</div>
   </div>
 </body>
 </html>`;
 }
 
-// ===================== AUTH =====================
+// ===================== AUTH — SUPABASE =====================
 
-dashboard.get("/login", (c) => c.html(loginPage()));
+dashboard.get("/login", (c) => {
+  const error = c.req.query("error");
+  return c.html(authPage("Sign in", `
+    <div class="auth-logo">Connect1</div>
+    <div class="auth-subtitle">Sign in to manage your integrations, connections, and API keys.</div>
+    ${error ? `<div class="alert alert-error">${error}</div>` : ""}
+    <form method="POST" action="/console/login">
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" name="email" placeholder="you@company.com" required autofocus>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" placeholder="Enter your password" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px">Sign in</button>
+    </form>
+    <div class="auth-footer">
+      Don't have an account? <a href="/console/signup">Create one</a>
+    </div>
+  `));
+});
+
+dashboard.get("/signup", (c) => {
+  const error = c.req.query("error");
+  return c.html(authPage("Create account", `
+    <div class="auth-logo">Connect1</div>
+    <div class="auth-subtitle">Create your account to start building integrations.</div>
+    ${error ? `<div class="alert alert-error">${error}</div>` : ""}
+    <form method="POST" action="/console/signup">
+      <div class="form-group">
+        <label>Company name</label>
+        <input type="text" name="name" placeholder="Acme Inc." required autofocus>
+      </div>
+      <div class="form-group">
+        <label>Email</label>
+        <input type="email" name="email" placeholder="you@company.com" required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" placeholder="Min 6 characters" required minlength="6">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px">Create account</button>
+    </form>
+    <div class="auth-footer">
+      Already have an account? <a href="/console/login">Sign in</a>
+    </div>
+  `));
+});
 
 dashboard.post("/login", async (c) => {
   const body = await c.req.parseBody();
-  const apiKey = body.apiKey as string;
-  if (!apiKey) return c.html(loginPage("API key is required"));
+  const email = body.email as string;
+  const password = body.password as string;
 
-  const database = getDb();
-  const [key] = await database
-    .select({ tenantId: apiKeys.tenantId })
-    .from(apiKeys)
-    .where(and(eq(apiKeys.key, apiKey), eq(apiKeys.isActive, true)))
-    .limit(1);
+  if (!email || !password) {
+    return c.redirect("/console/login?error=" + encodeURIComponent("Email and password are required"));
+  }
 
-  if (!key) return c.html(loginPage("Invalid API key"));
+  try {
+    const resp = await fetch(`${getSupabaseUrl()}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: getSupabaseAnonKey(),
+      },
+      body: JSON.stringify({ email, password }),
+    });
 
-  c.header("Set-Cookie", `connect1_key=${encodeURIComponent(apiKey)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=604800`);
-  return c.redirect("/console");
+    if (!resp.ok) {
+      const err = (await resp.json()) as { error_description?: string; msg?: string };
+      const msg = err.error_description || err.msg || "Invalid credentials";
+      return c.redirect("/console/login?error=" + encodeURIComponent(msg));
+    }
+
+    const data = (await resp.json()) as { access_token: string; refresh_token: string; expires_in: number };
+    c.header("Set-Cookie", `c1_token=${encodeURIComponent(data.access_token)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=${data.expires_in}`);
+    return c.redirect("/console");
+  } catch {
+    return c.redirect("/console/login?error=" + encodeURIComponent("Login failed. Try again."));
+  }
 });
 
-dashboard.post("/register", async (c) => {
+dashboard.post("/signup", async (c) => {
   const body = await c.req.parseBody();
   const name = body.name as string;
   const email = body.email as string;
+  const password = body.password as string;
 
-  if (!name || !email) return c.html(loginPage("Name and email are required"));
+  if (!name || !email || !password) {
+    return c.redirect("/console/signup?error=" + encodeURIComponent("All fields are required"));
+  }
 
   try {
-    const resp = await fetch(`${c.req.url.split("/console")[0]}/v1/register`, {
+    // 1. Create Supabase auth user
+    const signupResp = await fetch(`${getSupabaseUrl()}/auth/v1/signup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email }),
+      headers: {
+        "Content-Type": "application/json",
+        apikey: getSupabaseAnonKey(),
+      },
+      body: JSON.stringify({ email, password }),
     });
-    const data = await resp.json() as Record<string, unknown>;
-    if (!resp.ok) {
-      return c.html(loginPage((data as any).error?.message ?? "Registration failed"));
+
+    if (!signupResp.ok) {
+      const err = (await signupResp.json()) as { msg?: string; message?: string };
+      return c.redirect("/console/signup?error=" + encodeURIComponent(err.msg || err.message || "Signup failed"));
     }
 
-    const apiKey = data.apiKey as string;
-    c.header("Set-Cookie", `connect1_key=${encodeURIComponent(apiKey)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=604800`);
+    // 2. Sign in to get the token
+    const loginResp = await fetch(`${getSupabaseUrl()}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: getSupabaseAnonKey(),
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    if (!loginResp.ok) {
+      // User created but email confirmation might be required
+      return c.redirect("/console/login?error=" + encodeURIComponent("Account created. Please check your email to confirm, then sign in."));
+    }
+
+    const loginData = (await loginResp.json()) as { access_token: string; expires_in: number };
+
+    // 3. Create tenant + API key in our database
+    const database = getDb();
+    const [existing] = await database
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.email, email))
+      .limit(1);
+
+    if (!existing) {
+      const [tenant] = await database
+        .insert(tenants)
+        .values({ name, email, plan: "free" })
+        .returning();
+
+      const key = generateApiKey();
+      await database.insert(apiKeys).values({
+        tenantId: tenant.id,
+        key,
+        name: "Default Key",
+      });
+    }
+
+    c.header("Set-Cookie", `c1_token=${encodeURIComponent(loginData.access_token)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=${loginData.expires_in}`);
     return c.redirect("/console");
   } catch {
-    return c.html(loginPage("Registration failed. Try again."));
+    return c.redirect("/console/signup?error=" + encodeURIComponent("Signup failed. Try again."));
   }
 });
 
 dashboard.get("/logout", (c) => {
-  c.header("Set-Cookie", "connect1_key=; Path=/console; HttpOnly; Max-Age=0");
+  c.header("Set-Cookie", "c1_token=; Path=/console; HttpOnly; Max-Age=0");
   return c.redirect("/console/login");
 });
 
-// Auth middleware for all other dashboard routes
+// Auth middleware — verify Supabase token and resolve tenant
 dashboard.use("*", async (c, next) => {
-  if (c.req.path === "/console/login" || c.req.path === "/console/register" || c.req.path === "/console/logout") {
+  const path = c.req.path;
+  if (path === "/console/login" || path === "/console/signup" || path === "/console/logout") {
     return next();
   }
-  const tenant = await getDashboardTenant(c);
-  if (!tenant) return c.redirect("/console/login");
-  c.set("tenantId", tenant.tenantId);
-  c.set("tenantName", tenant.tenantName);
-  c.set("tenantEmail", tenant.tenantEmail);
-  c.set("plan", tenant.plan);
+
+  const token = getCookie(c, "c1_token");
+  if (!token) return c.redirect("/console/login");
+
+  const user = await getSupabaseUser(token);
+  if (!user) {
+    c.header("Set-Cookie", "c1_token=; Path=/console; HttpOnly; Max-Age=0");
+    return c.redirect("/console/login");
+  }
+
+  // Look up tenant by email
+  const database = getDb();
+  const [tenant] = await database
+    .select({ id: tenants.id, name: tenants.name, email: tenants.email, plan: tenants.plan })
+    .from(tenants)
+    .where(eq(tenants.email, user.email))
+    .limit(1);
+
+  if (!tenant) {
+    // Tenant not found — create one automatically
+    const [newTenant] = await database
+      .insert(tenants)
+      .values({ name: user.email.split("@")[0], email: user.email, plan: "free" })
+      .returning();
+
+    const key = generateApiKey();
+    await database.insert(apiKeys).values({ tenantId: newTenant.id, key, name: "Default Key" });
+
+    c.set("tenantId", newTenant.id);
+    c.set("tenantName", newTenant.name);
+    c.set("tenantEmail", newTenant.email);
+    c.set("plan", newTenant.plan);
+  } else {
+    c.set("tenantId", tenant.id);
+    c.set("tenantName", tenant.name);
+    c.set("tenantEmail", tenant.email);
+    c.set("plan", tenant.plan);
+  }
+  c.set("supabaseToken", token);
   return next();
 });
 
@@ -323,7 +609,7 @@ dashboard.use("*", async (c, next) => {
 
 dashboard.get("/", async (c) => {
   const tenantId = c.get("tenantId");
-  const tenantName = c.get("tenantName");
+  const tenantEmail = c.get("tenantEmail");
   const database = getDb();
 
   const [connCount] = await database.select({ count: count() }).from(connections).where(eq(connections.tenantId, tenantId));
@@ -340,70 +626,67 @@ dashboard.get("/", async (c) => {
 
   const connRows = recentConns.length === 0
     ? '<div class="card-empty">No connections yet. Configure an integration to get started.</div>'
-    : `<table><thead><tr><th>Provider</th><th>User</th><th>Status</th><th>Created</th></tr></thead><tbody>${recentConns.map(conn => `
-        <tr><td><span class="badge badge-blue">${conn.provider}</span></td><td>${conn.providerEmail || conn.userId}</td><td><span class="badge badge-green">${conn.status}</span></td><td>${conn.createdAt ? new Date(conn.createdAt).toLocaleDateString() : "—"}</td></tr>`).join("")}</tbody></table>`;
+    : `<table><thead><tr><th>Provider</th><th>User</th><th>Status</th><th>Created</th></tr></thead><tbody>${recentConns.map(conn =>
+        `<tr><td><span class="badge badge-blue">${conn.provider}</span></td><td style="color:var(--text2)">${conn.providerEmail || conn.userId}</td><td><span class="badge badge-green">${conn.status}</span></td><td style="color:var(--text3)">${conn.createdAt ? new Date(conn.createdAt).toLocaleDateString() : "—"}</td></tr>`
+      ).join("")}</tbody></table>`;
 
-  return c.html(page("Dashboard", "home", `
-    <div class="page-header"><h2>Dashboard</h2><p>Overview of your Connect1 workspace.</p></div>
+  return c.html(page("Overview", "home", `
+    <div class="page-header"><h2>Overview</h2><p>Your Connect1 workspace at a glance.</p></div>
     <div class="stats">
       <div class="stat-card"><div class="label">Connections</div><div class="value">${connCount.count}</div></div>
       <div class="stat-card"><div class="label">Integrations</div><div class="value">${appCount.count}</div></div>
       <div class="stat-card"><div class="label">API Keys</div><div class="value">${keyCount.count}</div></div>
-      <div class="stat-card"><div class="label">Available Providers</div><div class="value">${providers.length}</div></div>
+      <div class="stat-card"><div class="label">Providers</div><div class="value">${providers.length}</div></div>
     </div>
     <div class="card"><div class="card-header"><h3>Recent Connections</h3></div>${connRows}</div>
-
     <div class="card"><div class="card-header"><h3>Quick Start</h3></div><div class="card-body">
-      <p style="color:var(--text2);margin-bottom:1rem">1. Go to <a href="/console/integrations">Integrations</a> and configure your OAuth app credentials.</p>
-      <p style="color:var(--text2);margin-bottom:1rem">2. Use the SDK or API to connect your users:</p>
+      <p class="text-sm text-muted mb-4">1. Go to <a href="/console/integrations" style="color:var(--text)">Integrations</a> and configure your OAuth credentials.</p>
+      <p class="text-sm text-muted mb-4">2. Use the SDK or API to connect users:</p>
       <div class="code-block">curl -X POST ${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}/v1/auth/connect \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"provider": "gmail", "userId": "user_123"}'</div>
     </div></div>
-  `, tenantName));
+  `, tenantEmail));
 });
 
 // ===================== INTEGRATIONS =====================
 
 dashboard.get("/integrations", async (c) => {
   const tenantId = c.get("tenantId");
-  const tenantName = c.get("tenantName");
+  const tenantEmail = c.get("tenantEmail");
   const database = getDb();
   const providers = listProviders();
 
   const configured = await database
-    .select({ provider: oauthApps.provider, id: oauthApps.id, createdAt: oauthApps.createdAt })
+    .select({ provider: oauthApps.provider })
     .from(oauthApps)
     .where(eq(oauthApps.tenantId, tenantId));
 
   const configuredSet = new Set(configured.map(a => a.provider));
 
-  const [connCounts] = await database
-    .select({ count: count() })
-    .from(connections)
-    .where(eq(connections.tenantId, tenantId));
-
   const cards = providers.map(p => {
     const isConfigured = configuredSet.has(p.id);
-    return `<a href="/console/integrations/${p.id}" class="provider-card ${isConfigured ? "configured" : ""}" style="text-decoration:none;color:inherit">
+    return `<a href="/console/integrations/${p.id}" class="provider-card ${isConfigured ? "configured" : ""}">
       <h4>${p.name}</h4>
-      <p style="color:var(--text3);font-size:0.8rem">${p.description ?? ""}</p>
-      <div class="domains">${p.domains.map(d => `<span class="badge badge-blue">${d}</span>`).join(" ")}</div>
-      <div class="status">${isConfigured ? '<span class="badge badge-green">Configured</span>' : '<span class="badge badge-gray">Not configured</span>'}</div>
+      <p class="desc">${p.description ?? ""}</p>
+      <div class="meta">
+        <div>${p.domains.map(d => `<span class="badge badge-blue">${d}</span>`).join(" ")}</div>
+        <span>${isConfigured ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-gray">Setup required</span>'}</span>
+      </div>
     </a>`;
   }).join("");
 
   return c.html(page("Integrations", "integrations", `
-    <div class="page-header"><h2>Integrations</h2><p>Configure OAuth credentials for each provider. You bring your own OAuth app — Connect1 handles the rest.</p></div>
+    <div class="page-header"><h2>Integrations</h2><p>Configure OAuth credentials for each provider. Bring your own OAuth app — Connect1 handles the rest.</p></div>
     <div class="provider-grid">${cards}</div>
-  `, tenantName));
+  `, tenantEmail));
 });
 
-// Integration detail / setup page
+// Integration detail
 dashboard.get("/integrations/:providerId", async (c) => {
   const tenantId = c.get("tenantId");
-  const tenantName = c.get("tenantName");
+  const tenantEmail = c.get("tenantEmail");
   const providerId = c.req.param("providerId");
   const database = getDb();
 
@@ -418,7 +701,7 @@ dashboard.get("/integrations/:providerId", async (c) => {
 
   let decryptedClientId = "";
   if (existingApp) {
-    try { decryptedClientId = decrypt(existingApp.clientId, getEncryptionKey()); } catch { decryptedClientId = "••••••"; }
+    try { decryptedClientId = decrypt(existingApp.clientId, getEncryptionKey()); } catch { decryptedClientId = ""; }
   }
 
   const connCount = await database
@@ -428,66 +711,75 @@ dashboard.get("/integrations/:providerId", async (c) => {
 
   const oauth = connector.config.oauth;
   const defaultScopes = oauth?.defaultScopes?.join(", ") ?? "";
-  const apiKey = getCookie(c, "connect1_key") ?? "";
+
+  // Get an active API key for this tenant to use in htmx calls
+  const [activeKey] = await database
+    .select({ key: apiKeys.key })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.tenantId, tenantId), eq(apiKeys.isActive, true)))
+    .limit(1);
+  const tenantApiKey = activeKey?.key ?? "";
 
   return c.html(page(connector.config.name, "integrations", `
     <div class="page-header">
-      <p style="margin-bottom:0.5rem"><a href="/console/integrations">&larr; Integrations</a></p>
+      <p class="mb-4"><a href="/console/integrations" style="color:var(--text2)">&larr; Back to integrations</a></p>
       <h2>${connector.config.name}</h2>
       <p>${connector.config.description ?? ""}</p>
     </div>
 
-    <div class="tabs">
-      <span class="tab active">Settings</span>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 300px;gap:1.5rem">
+    <div style="display:grid;grid-template-columns:1fr 280px;gap:16px">
       <div>
         <div class="card"><div class="card-header"><h3>${existingApp ? "Update" : "Configure"} OAuth Credentials</h3></div><div class="card-body">
-          ${existingApp ? '<div class="alert alert-success">Integration is configured and active.</div>' : '<div class="alert alert-info">Enter your OAuth app credentials from the provider\'s developer console.</div>'}
+          ${existingApp
+            ? '<div class="alert alert-success">Integration is configured and active.</div>'
+            : '<div class="alert alert-info">Enter your OAuth app credentials from the provider\'s developer console.</div>'}
 
           <form hx-post="/console/api/integrations/${providerId}" hx-ext="json-enc" hx-swap="none">
-            <input type="hidden" name="apiKey" value="${apiKey}">
+            <input type="hidden" name="apiKey" value="${tenantApiKey}">
             <div class="form-group">
               <label>Client ID</label>
-              <input type="text" name="clientId" placeholder="Enter client ID" value="${decryptedClientId}" required>
+              <input type="text" name="clientId" placeholder="Enter your client ID" value="${decryptedClientId}" required>
             </div>
             <div class="form-group">
               <label>Client Secret</label>
-              <input type="password" name="clientSecret" placeholder="${existingApp ? "••••••••••• (leave empty to keep current)" : "Enter client secret"}" ${existingApp ? "" : "required"}>
+              <input type="password" name="clientSecret" placeholder="${existingApp ? "Leave empty to keep current" : "Enter your client secret"}" ${existingApp ? "" : "required"}>
             </div>
             <div class="form-group">
-              <label>Scopes <span style="color:var(--text3)">(comma-separated, optional)</span></label>
+              <label>Scopes <span class="hint">(comma-separated, optional)</span></label>
               <input type="text" name="scopes" placeholder="${defaultScopes}" value="${existingApp?.scopes?.join(", ") ?? ""}">
             </div>
             <div class="form-group">
-              <label>Callback URL <span style="color:var(--text3)">(add this to your OAuth app)</span></label>
-              <input type="text" value="${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}/v1/auth/callback" readonly style="color:var(--text3)">
+              <label>Callback URL <span class="hint">(add this to your OAuth app)</span></label>
+              <input type="text" value="${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}/v1/auth/callback" readonly>
             </div>
-            <button type="submit" class="btn btn-primary">${existingApp ? "Update" : "Save"} Credentials</button>
-            ${existingApp ? `<button type="button" class="btn btn-danger" style="margin-left:0.5rem" hx-delete="/console/api/integrations/${providerId}" hx-confirm="Remove this integration?" hx-swap="none" onclick="setTimeout(()=>location.reload(),500)">Remove</button>` : ""}
+            <div class="flex gap-2">
+              <button type="submit" class="btn btn-primary">${existingApp ? "Update credentials" : "Save credentials"}</button>
+              ${existingApp ? `<button type="button" class="btn btn-danger" hx-delete="/console/api/integrations/${providerId}" hx-confirm="Remove this integration?" hx-swap="none" onclick="setTimeout(function(){location.reload()},500)">Remove</button>` : ""}
+            </div>
           </form>
         </div></div>
       </div>
 
       <div>
-        <div class="card"><div class="card-header"><h3>Info</h3></div><div class="card-body" style="font-size:0.8rem;color:var(--text2)">
-          <p><strong>Provider ID:</strong> ${providerId}</p>
-          <p style="margin-top:0.5rem"><strong>Auth type:</strong> ${connector.config.authType}</p>
-          <p style="margin-top:0.5rem"><strong>Domains:</strong> ${connector.config.domains.join(", ")}</p>
-          <p style="margin-top:0.5rem"><strong>Connections:</strong> ${connCount[0].count}</p>
-          ${oauth ? `<p style="margin-top:0.5rem"><strong>Auth URL:</strong><br><code style="word-break:break-all">${oauth.authUrl}</code></p>` : ""}
+        <div class="card"><div class="card-header"><h3>Details</h3></div><div class="card-body">
+          <div style="font-size:12px;color:var(--text2);display:grid;gap:10px">
+            <div><span style="color:var(--text3)">Provider ID</span><br><code>${providerId}</code></div>
+            <div><span style="color:var(--text3)">Auth type</span><br>${connector.config.authType}</div>
+            <div><span style="color:var(--text3)">Domains</span><br>${connector.config.domains.join(", ")}</div>
+            <div><span style="color:var(--text3)">Connections</span><br>${connCount[0].count}</div>
+            ${oauth ? `<div><span style="color:var(--text3)">Auth URL</span><br><span style="word-break:break-all;font-size:11px">${oauth.authUrl}</span></div>` : ""}
+          </div>
         </div></div>
       </div>
     </div>
-  `, tenantName));
+  `, tenantEmail));
 });
 
 // ===================== CONNECTIONS =====================
 
 dashboard.get("/connections", async (c) => {
   const tenantId = c.get("tenantId");
-  const tenantName = c.get("tenantName");
+  const tenantEmail = c.get("tenantEmail");
   const database = getDb();
 
   const conns = await database
@@ -499,57 +791,59 @@ dashboard.get("/connections", async (c) => {
 
   const rows = conns.length === 0
     ? '<div class="card-empty">No connections yet. Use the SDK or API to connect user accounts.</div>'
-    : `<table><thead><tr><th>Provider</th><th>User ID</th><th>Account</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${conns.map(conn => `
-        <tr>
+    : `<table><thead><tr><th>Provider</th><th>User ID</th><th>Account</th><th>Status</th><th>Created</th><th></th></tr></thead><tbody>${conns.map(conn =>
+        `<tr>
           <td><span class="badge badge-blue">${conn.provider}</span></td>
           <td><code>${conn.userId}</code></td>
-          <td>${conn.providerEmail ?? "—"}</td>
+          <td style="color:var(--text2)">${conn.providerEmail ?? "—"}</td>
           <td><span class="badge ${conn.status === "active" ? "badge-green" : "badge-gray"}">${conn.status}</span></td>
-          <td>${conn.createdAt ? new Date(conn.createdAt).toLocaleDateString() : "—"}</td>
+          <td style="color:var(--text3)">${conn.createdAt ? new Date(conn.createdAt).toLocaleDateString() : "—"}</td>
           <td><button class="btn btn-danger btn-sm" hx-delete="/console/api/connections/${conn.id}" hx-confirm="Delete this connection?" hx-target="closest tr" hx-swap="outerHTML">Delete</button></td>
-        </tr>`).join("")}</tbody></table>`;
+        </tr>`
+      ).join("")}</tbody></table>`;
 
   return c.html(page("Connections", "connections", `
     <div class="page-header"><h2>Connections</h2><p>Active OAuth connections for your users.</p></div>
     <div class="card">${rows}</div>
-  `, tenantName));
+  `, tenantEmail));
 });
 
 // ===================== API KEYS =====================
 
 dashboard.get("/api-keys", async (c) => {
   const tenantId = c.get("tenantId");
-  const tenantName = c.get("tenantName");
+  const tenantEmail = c.get("tenantEmail");
   const database = getDb();
 
   const keys = await database
-    .select({ id: apiKeys.id, name: apiKeys.name, key: apiKeys.key, scopes: apiKeys.scopes, lastUsedAt: apiKeys.lastUsedAt, createdAt: apiKeys.createdAt, isActive: apiKeys.isActive })
+    .select({ id: apiKeys.id, name: apiKeys.name, key: apiKeys.key, lastUsedAt: apiKeys.lastUsedAt, createdAt: apiKeys.createdAt, isActive: apiKeys.isActive })
     .from(apiKeys)
     .where(eq(apiKeys.tenantId, tenantId))
     .orderBy(sql`${apiKeys.createdAt} DESC`);
 
-  const rows = keys.map(key => `
-    <tr>
-      <td>${key.name}</td>
-      <td><code>${key.key.slice(0, 16)}${"•".repeat(12)}</code></td>
+  const rows = keys.map(key =>
+    `<tr>
+      <td style="font-weight:500">${key.name}</td>
+      <td><code>${key.key.slice(0, 12)}${"•".repeat(8)}${key.key.slice(-4)}</code></td>
       <td><span class="badge ${key.isActive ? "badge-green" : "badge-gray"}">${key.isActive ? "Active" : "Revoked"}</span></td>
-      <td>${key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : "Never"}</td>
-      <td>${key.createdAt ? new Date(key.createdAt).toLocaleDateString() : "—"}</td>
+      <td style="color:var(--text3)">${key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : "Never"}</td>
+      <td style="color:var(--text3)">${key.createdAt ? new Date(key.createdAt).toLocaleDateString() : "—"}</td>
       <td>${key.isActive ? `<button class="btn btn-danger btn-sm" hx-delete="/console/api/keys/${key.id}" hx-confirm="Revoke this API key?" hx-target="closest tr" hx-swap="outerHTML">Revoke</button>` : ""}</td>
-    </tr>`).join("");
+    </tr>`
+  ).join("");
 
   return c.html(page("API Keys", "api-keys", `
-    <div class="page-header" style="display:flex;justify-content:space-between;align-items:start">
-      <div><h2>API Keys</h2><p>Manage keys used to authenticate with the Connect1 API.</p></div>
-      <form hx-post="/console/api/keys" hx-ext="json-enc" hx-swap="none" style="display:flex;gap:0.5rem" onsubmit="setTimeout(()=>location.reload(),500)">
-        <input type="text" name="name" placeholder="Key name" required style="padding:0.45rem 0.75rem;background:var(--bg);border:1px solid var(--border);border-radius:0.375rem;color:var(--text);font-size:0.8rem;width:180px">
-        <button type="submit" class="btn btn-primary">Create Key</button>
+    <div class="page-header flex justify-between items-center">
+      <div><h2>API Keys</h2><p>Manage keys for authenticating with the Connect1 API.</p></div>
+      <form hx-post="/console/api/keys" hx-ext="json-enc" hx-swap="none" class="flex gap-2" onsubmit="setTimeout(function(){location.reload()},600)">
+        <input type="text" name="name" placeholder="Key name" required style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text);font-size:13px;width:180px">
+        <button type="submit" class="btn btn-primary">Create key</button>
       </form>
     </div>
     <div class="card">
       <table><thead><tr><th>Name</th><th>Key</th><th>Status</th><th>Last Used</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     </div>
-  `, tenantName));
+  `, tenantEmail));
 });
 
 // ===================== SETTINGS =====================
@@ -561,32 +855,50 @@ dashboard.get("/settings", async (c) => {
   const plan = c.get("plan");
 
   return c.html(page("Settings", "settings", `
-    <div class="page-header"><h2>Environment Settings</h2></div>
+    <div class="page-header"><h2>Settings</h2><p>Manage your workspace configuration.</p></div>
+
     <div class="card"><div class="card-header"><h3>Account</h3></div><div class="card-body">
-      <div style="display:grid;grid-template-columns:120px 1fr;gap:0.75rem;font-size:0.85rem">
+      <div style="display:grid;grid-template-columns:140px 1fr;gap:12px;font-size:13px">
         <span style="color:var(--text3)">Tenant ID</span><code>${tenantId}</code>
         <span style="color:var(--text3)">Name</span><span>${tenantName}</span>
         <span style="color:var(--text3)">Email</span><span>${tenantEmail}</span>
         <span style="color:var(--text3)">Plan</span><span class="badge badge-blue">${plan}</span>
       </div>
     </div></div>
-    <div class="card"><div class="card-header"><h3>API Base URL</h3></div><div class="card-body">
-      <code>${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}</code>
+
+    <div class="card"><div class="card-header"><h3>API Configuration</h3></div><div class="card-body">
+      <div class="form-group">
+        <label>API Base URL</label>
+        <input type="text" value="${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}" readonly>
+      </div>
+      <div class="form-group">
+        <label>OAuth Callback URL <span class="hint">(add this to all your OAuth app configs)</span></label>
+        <input type="text" value="${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}/v1/auth/callback" readonly>
+      </div>
     </div></div>
-    <div class="card"><div class="card-header"><h3>OAuth Callback URL</h3></div><div class="card-body">
-      <p style="color:var(--text2);font-size:0.85rem;margin-bottom:0.5rem">Add this URL to all your OAuth app configurations:</p>
-      <code>${process.env.API_BASE_URL || "https://connect1-api.onrender.com"}/v1/auth/callback</code>
-    </div></div>
-  `, tenantName));
+  `, tenantEmail));
 });
 
-// ===================== API ENDPOINTS (htmx targets) =====================
+// ===================== API ENDPOINTS (htmx) =====================
+
+// Helper: get tenant API key from cookie or resolve from tenant
+async function getTenantApiKey(c: any): Promise<string | null> {
+  const tenantId = c.get("tenantId");
+  if (!tenantId) return null;
+  const database = getDb();
+  const [key] = await database
+    .select({ key: apiKeys.key })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.tenantId, tenantId), eq(apiKeys.isActive, true)))
+    .limit(1);
+  return key?.key ?? null;
+}
 
 // Save integration credentials
 dashboard.post("/api/integrations/:providerId", async (c) => {
   const providerId = c.req.param("providerId");
   const body = await c.req.json<{ apiKey?: string; clientId: string; clientSecret?: string; scopes?: string }>();
-  const apiKey = body.apiKey || getCookie(c, "connect1_key");
+  const apiKey = body.apiKey || await getTenantApiKey(c);
 
   if (!apiKey) return c.json({ error: { message: "Not authenticated" } }, 401);
 
@@ -597,15 +909,11 @@ dashboard.post("/api/integrations/:providerId", async (c) => {
   if (body.clientSecret) payload.clientSecret = body.clientSecret;
   if (body.scopes) payload.scopes = body.scopes.split(",").map(s => s.trim()).filter(Boolean);
 
-  // If no clientSecret provided and this is an update, we need to fetch the existing one
   if (!body.clientSecret) {
     const database = getDb();
-    // Look up tenant from API key
-    const [key] = await database.select({ tenantId: apiKeys.tenantId }).from(apiKeys).where(eq(apiKeys.key, apiKey)).limit(1);
-    if (!key) return c.json({ error: { message: "Invalid key" } }, 401);
-
+    const tenantId = c.get("tenantId");
     const [existing] = await database.select({ clientSecret: oauthApps.clientSecret }).from(oauthApps)
-      .where(and(eq(oauthApps.tenantId, key.tenantId), eq(oauthApps.provider, providerId))).limit(1);
+      .where(and(eq(oauthApps.tenantId, tenantId), eq(oauthApps.provider, providerId))).limit(1);
 
     if (existing) {
       payload.clientSecret = decrypt(existing.clientSecret, getEncryptionKey());
@@ -631,16 +939,13 @@ dashboard.post("/api/integrations/:providerId", async (c) => {
 // Delete integration
 dashboard.delete("/api/integrations/:providerId", async (c) => {
   const providerId = c.req.param("providerId");
-  const apiKey = getCookie(c, "connect1_key");
+  const apiKey = await getTenantApiKey(c);
   if (!apiKey) return c.json({ error: { message: "Not authenticated" } }, 401);
 
-  // Find the oauthApp ID
   const database = getDb();
-  const [key] = await database.select({ tenantId: apiKeys.tenantId }).from(apiKeys).where(eq(apiKeys.key, apiKey)).limit(1);
-  if (!key) return c.json({ error: { message: "Invalid key" } }, 401);
-
+  const tenantId = c.get("tenantId");
   const [app] = await database.select({ id: oauthApps.id }).from(oauthApps)
-    .where(and(eq(oauthApps.tenantId, key.tenantId), eq(oauthApps.provider, providerId))).limit(1);
+    .where(and(eq(oauthApps.tenantId, tenantId), eq(oauthApps.provider, providerId))).limit(1);
 
   if (!app) return c.json({ error: { message: "Not found" } }, 404);
 
@@ -655,7 +960,7 @@ dashboard.delete("/api/integrations/:providerId", async (c) => {
 // Delete connection
 dashboard.delete("/api/connections/:id", async (c) => {
   const id = c.req.param("id");
-  const apiKey = getCookie(c, "connect1_key");
+  const apiKey = await getTenantApiKey(c);
   if (!apiKey) return c.json({ error: { message: "Not authenticated" } }, 401);
 
   const resp = await fetch(`${getBaseUrl(c)}/v1/connections/${id}`, {
@@ -669,7 +974,7 @@ dashboard.delete("/api/connections/:id", async (c) => {
 // Create API key
 dashboard.post("/api/keys", async (c) => {
   const body = await c.req.json<{ name: string }>();
-  const apiKey = getCookie(c, "connect1_key");
+  const apiKey = await getTenantApiKey(c);
   if (!apiKey) return c.json({ error: { message: "Not authenticated" } }, 401);
 
   const resp = await fetch(`${getBaseUrl(c)}/v1/tenant/api-keys`, {
@@ -685,7 +990,7 @@ dashboard.post("/api/keys", async (c) => {
 // Revoke API key
 dashboard.delete("/api/keys/:id", async (c) => {
   const id = c.req.param("id");
-  const apiKey = getCookie(c, "connect1_key");
+  const apiKey = await getTenantApiKey(c);
   if (!apiKey) return c.json({ error: { message: "Not authenticated" } }, 401);
 
   const resp = await fetch(`${getBaseUrl(c)}/v1/tenant/api-keys/${id}`, {
