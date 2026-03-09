@@ -1,0 +1,24 @@
+{
+  "name": "@connect1/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for Connect1 — exposes connectors as AI agent tools",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "connect1-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "connect1": "*",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

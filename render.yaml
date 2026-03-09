@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: connect1-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3100"
+      - key: DATABASE_URL
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: API_BASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: connect1-redis
+          type: redis
+          property: connectionString
+  - type: redis
+    name: connect1-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []

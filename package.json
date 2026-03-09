@@ -1,0 +1,22 @@
+{
+  "name": "connect1",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "connectors/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/api",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "db:generate": "npm run generate --workspace=packages/db",
+    "db:push": "npm run push --workspace=packages/db",
+    "mcp": "npm run dev --workspace=packages/mcp-server"
+  },
+  "packageManager": "npm@10.9.4",
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  }
+}
