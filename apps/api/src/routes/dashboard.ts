@@ -491,7 +491,7 @@ dashboard.post("/signup", async (c) => {
   }
 
   try {
-    // 1. Create Supabase auth user
+    // 1. Create Supabase auth user — returns tokens directly if email confirm is disabled
     const signupResp = await fetch(`${getSupabaseUrl()}/auth/v1/signup`, {
       method: "POST",
       headers: {
@@ -501,29 +501,44 @@ dashboard.post("/signup", async (c) => {
       body: JSON.stringify({ email, password }),
     });
 
+    const signupData = (await signupResp.json()) as {
+      access_token?: string;
+      expires_in?: number;
+      msg?: string;
+      message?: string;
+      code?: number;
+    };
+
     if (!signupResp.ok) {
-      const err = (await signupResp.json()) as { msg?: string; message?: string };
-      return c.redirect("/console/signup?error=" + encodeURIComponent(err.msg || err.message || "Signup failed"));
+      const msg = signupData.msg || signupData.message || "Signup failed";
+      return c.redirect("/console/signup?error=" + encodeURIComponent(msg));
     }
 
-    // 2. Sign in to get the token
-    const loginResp = await fetch(`${getSupabaseUrl()}/auth/v1/token?grant_type=password`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: getSupabaseAnonKey(),
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    // If signup returned tokens directly (email confirm disabled), use them
+    let accessToken = signupData.access_token;
+    let expiresIn = signupData.expires_in || 3600;
 
-    if (!loginResp.ok) {
-      // User created but email confirmation might be required
-      return c.redirect("/console/login?error=" + encodeURIComponent("Account created. Please check your email to confirm, then sign in."));
+    // If no token (email confirm enabled), try logging in
+    if (!accessToken) {
+      const loginResp = await fetch(`${getSupabaseUrl()}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: getSupabaseAnonKey(),
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!loginResp.ok) {
+        return c.redirect("/console/login?error=" + encodeURIComponent("Account created. Please check your email to confirm, then sign in."));
+      }
+
+      const loginData = (await loginResp.json()) as { access_token: string; expires_in: number };
+      accessToken = loginData.access_token;
+      expiresIn = loginData.expires_in;
     }
 
-    const loginData = (await loginResp.json()) as { access_token: string; expires_in: number };
-
-    // 3. Create tenant + API key in our database
+    // 2. Create tenant + API key in our database
     const database = getDb();
     const [existing] = await database
       .select({ id: tenants.id })
@@ -545,9 +560,10 @@ dashboard.post("/signup", async (c) => {
       });
     }
 
-    c.header("Set-Cookie", `c1_token=${encodeURIComponent(loginData.access_token)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=${loginData.expires_in}`);
+    c.header("Set-Cookie", `c1_token=${encodeURIComponent(accessToken)}; Path=/console; HttpOnly; SameSite=Lax; Max-Age=${expiresIn}`);
     return c.redirect("/console");
-  } catch {
+  } catch (e) {
+    console.error("Signup error:", e);
     return c.redirect("/console/signup?error=" + encodeURIComponent("Signup failed. Try again."));
   }
 });
