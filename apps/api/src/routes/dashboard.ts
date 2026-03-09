@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { html } from "hono/html";
+import { html, raw } from "hono/html";
 import { createDb, connections, oauthApps, apiKeys, tenants } from "@connect1/db";
 import { count, sql } from "drizzle-orm";
 import { listProviders } from "../lib/connectors.js";
@@ -58,7 +58,7 @@ function layout(title: string, content: string) {
     <a href="/console/api-keys">API Keys</a>
   </nav>
   <div class="container">
-    ${content}
+    ${raw(content)}
   </div>
 </body>
 </html>`;
